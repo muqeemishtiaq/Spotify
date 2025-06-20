@@ -74,7 +74,7 @@ export async function POST(request: Request) {
         }
 
         case "checkout.session.completed":
-          // Optional: You may handle the session to store metadata or log
+      
           break;
 
         default:
