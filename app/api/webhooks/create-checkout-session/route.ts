@@ -7,7 +7,7 @@ import { getURL } from "@/libs/helpers";
 import { createOrRetriveACustomer } from "@/libs/supabaseAdmin";
 
 export async function POST(request: Request) {
-  const { price, quantity = 1 } = await request.json();
+  const { price, quantity = 1 }: { price: { id: string }; quantity?: number } = await request.json();
 
   try {
     const supabase = createRouteHandlerClient({ cookies });
@@ -42,8 +42,12 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ sessionId: session.id });
-  } catch (error: any) {
-    console.error("Checkout session creation error:", error);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      console.error("Checkout session creation error:", error.message);
+    } else {
+      console.error("Checkout session creation error:", error);
+    }
     return new NextResponse("Internal Error", { status: 500 });
   }
 }
