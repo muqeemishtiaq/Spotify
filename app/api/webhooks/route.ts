@@ -22,7 +22,7 @@ const relevantEvents = new Set([
 
 export async function POST(request: Request) {
   const body = await request.text();
-  const rawHeaders = await headers(); // ✅ Correctly awaited
+  const rawHeaders = await headers();
   const sig = rawHeaders.get("Stripe-Signature");
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -36,9 +36,10 @@ export async function POST(request: Request) {
 
   try {
     event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
-  } catch (err: any) {
-    console.error("❌ Webhook Error:", err.message);
-    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("❌ Webhook Error:", message);
+    return new NextResponse(`Webhook Error: ${message}`, { status: 400 });
   }
 
   console.log("✅ Stripe webhook received:", event.type);
@@ -47,18 +48,22 @@ export async function POST(request: Request) {
     try {
       switch (event.type) {
         case "product.created":
-        case "product.updated":
-          await upsertProductRecord(event.data.object as Stripe.Product);
+        case "product.updated": {
+          const product = event.data.object as Stripe.Product;
+          await upsertProductRecord(product);
           break;
+        }
 
         case "price.created":
-        case "price.updated":
-          await upsertPriceRecord(event.data.object as Stripe.Price);
+        case "price.updated": {
+          const price = event.data.object as Stripe.Price;
+          await upsertPriceRecord(price);
           break;
+        }
 
         case "customer.subscription.created":
         case "customer.subscription.updated":
-        case "customer.subscription.deleted":
+        case "customer.subscription.deleted": {
           const subscription = event.data.object as Stripe.Subscription;
           await manageSubscriptionStatusChange(
             subscription.id,
@@ -66,16 +71,18 @@ export async function POST(request: Request) {
             event.type === "customer.subscription.created"
           );
           break;
+        }
 
         case "checkout.session.completed":
-          // Optional: Handle session completion (e.g., create user record)
+          // Optional: You may handle the session to store metadata or log
           break;
 
         default:
           console.log(`⚠️ Unhandled event type: ${event.type}`);
       }
-    } catch (err: any) {
-      console.error("❌ Error handling Stripe event:", err.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("❌ Error handling Stripe event:", message);
       return new NextResponse("Webhook handler failed", { status: 500 });
     }
   }

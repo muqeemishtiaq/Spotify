@@ -1,53 +1,82 @@
-import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { cookies } from "next/headers";
+import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import Stripe from "stripe";
 
 import { stripe } from "@/libs/stripe";
-import { getURL } from "@/libs/helpers";
-import { createOrRetriveACustomer } from "@/libs/supabaseAdmin";
+import { supabaseAdmin, upsertPriceRecord, upsertProductRecord } from "@/libs/supabaseAdmin";
+
+// Define the Stripe event types your app cares about
+const relevantEvents = new Set([
+  "product.created",
+  "product.updated",
+  "price.created",
+  "price.updated",
+  "checkout.session.completed",
+]);
 
 export async function POST(request: Request) {
-  const { price, quantity = 1 }: { price: { id: string }; quantity?: number } = await request.json();
+  const body = await request.text();
+
+  const headersList = await headers(); // ✅ Fix: await the headers
+  const sig = headersList.get("stripe-signature") as string;
+
+  let event: Stripe.Event;
 
   try {
-    const supabase = createRouteHandlerClient({ cookies });
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const customer = await createOrRetriveACustomer({
-      email: user?.email ?? "",
-      uuid: user?.id ?? "",
-    });
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      billing_address_collection: "required",
-      customer,
-      line_items: [
-        {
-          price: price.id,
-          quantity,
-        },
-      ],
-      mode: "subscription",
-      allow_promotion_codes: true,
-      subscription_data: {
-        metadata: {
-          userId: user?.id ?? "",
-        },
-      },
-      success_url: `${getURL()}/account`,
-      cancel_url: `${getURL()}/`,
-    });
-
-    return NextResponse.json({ sessionId: session.id });
+    event = stripe.webhooks.constructEvent(
+      body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    );
   } catch (error: unknown) {
-    if (error instanceof Error) {
-      console.error("Checkout session creation error:", error.message);
-    } else {
-      console.error("Checkout session creation error:", error);
-    }
-    return new NextResponse("Internal Error", { status: 500 });
+    const message =
+      error instanceof Error ? error.message : "Unknown webhook error";
+    console.error("Webhook signature verification failed:", message);
+    return new NextResponse(`Webhook Error: ${message}`, { status: 400 });
   }
+
+  if (relevantEvents.has(event.type)) {
+    try {
+      switch (event.type) {
+        case "product.created":
+        case "product.updated":
+          await upsertProductRecord(event.data.object as Stripe.Product);
+          break;
+
+        case "price.created":
+        case "price.updated":
+          await upsertPriceRecord(event.data.object as Stripe.Price);
+          break;
+
+        case "checkout.session.completed": {
+          const session = event.data.object as Stripe.Checkout.Session;
+
+          const userId = session?.metadata?.userId;
+          if (!userId) {
+            throw new Error("Missing userId in session metadata.");
+          }
+
+          // ✅ Fix: Add `as any` if is_premium is not typed
+          await supabaseAdmin
+            .from("users")
+            .update({
+              is_premium: true,
+            } as any)
+            .eq("id", userId);
+
+          break;
+        }
+
+        default:
+          console.log(`Unhandled event type: ${event.type}`);
+      }
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Unknown processing error";
+      console.error(`Webhook handler failed: ${message}`);
+      return new NextResponse("Webhook handler error", { status: 500 });
+    }
+  }
+
+  return new NextResponse(null, { status: 200 });
 }
